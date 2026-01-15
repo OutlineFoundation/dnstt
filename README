@@ -1,3 +1,60 @@
+# Userspace DNS tunnel with support for DoH and DoT
+
+This is a fork of the [original `dnstt` repository](https://www.bamsoftware.com/software/dnstt/)
+for exploration and investigation on how to make it work with the Outline SDK.
+
+## How the client works
+
+The `dnstt-client` acts as a bridge between local TCP applications and the `dnstt-server` through a DNS tunnel. It works by encapsulating TCP streams into encrypted, reliable sessions that are transported inside standard DNS queries (DoH, DoT, or UDP).
+
+Here is the step-by-step breakdown of its operation:
+
+### 1. Initialization and Configuration
+
+*   **Startup:** The client starts by parsing command-line arguments to determine the transport mode (DoH, DoT, or UDP), the tunnel domain (e.g., `t.example.com`), the server's public key, and the local listening address (e.g., `127.0.0.1:7000`).
+*   **uTLS:** If configured, it initializes a specific uTLS fingerprint (e.g., Firefox, Chrome) to mask its TLS handshake signatures when using DoH or DoT.
+
+### 2. Transport Layer Abstraction
+
+The client establishes a connection to a recursive resolver using one of three implementations of `net.PacketConn`:
+*   **DoH (`HTTPPacketConn`):** Sends DNS queries as HTTP POST requests to a DoH resolver (e.g., `https://doh.example/dns-query`). It handles HTTP rate limiting (`Retry-After`).
+*   **DoT (`TLSPacketConn`):** Maintains a persistent TLS connection to a DoT resolver (e.g., `8.8.8.8:853`) and sends length-prefixed DNS messages. It automatically reconnects if the connection drops.
+*   **UDP:** Uses a standard UDP socket to send DNS packets directly to a resolver or the tunnel server.
+
+### 3. DNS Encapsulation (`DNSPacketConn`)
+
+This is the core "tunneling" logic. The `DNSPacketConn` wraps the chosen transport and handles the conversion between raw bytes and DNS messages:
+*   **Encoding (Sending):**
+    1.  Takes a chunk of data (from the upper layers).
+    2.  Adds a length prefix and random padding.
+    3.  Prefixes a unique `ClientID`.
+    4.  Base32-encodes the entire payload.
+    5.  Splits the encoded string into 63-byte labels and appends the tunnel domain (e.g., `...base32data... .t.example.com`).
+    6.  Constructs a DNS `TXT` query for this name and sends it via the transport.
+*   **Decoding (Receiving):**
+    1.  Receives a DNS response.
+    2.  Extracts the `TXT` record from the Answer section.
+    3.  Decodes the Base32 data to retrieve the inner payload.
+
+### 4. Protocol Stack (The "Tunnel" Inside)
+
+Inside the DNS packets, `dnstt` runs a full networking stack to ensure the connection is useful:
+1.  **KCP (Reliability):** Since DNS is unreliable and unordered, KCP is used to provide a reliable, ordered stream of data (like TCP) over the packet-based DNS transport.
+2.  **Noise (Encryption):** The KCP stream is encrypted using the Noise protocol (Noise_NK_25519_ChaChaPoly_BLAKE2s). This ensures that the recursive resolver (and anyone watching the DNS traffic) cannot read the data, only the tunnel server can.
+3.  **smux (Multiplexing):** On top of the encrypted stream, `smux` allows multiple concurrent logical streams. This enables you to handle multiple TCP connections (e.g., multiple web requests) over the single tunnel session.
+
+### 5. Main Loop (`run`)
+
+*   **Listening:** The client listens on the local TCP port (e.g., `127.0.0.1:7000`).
+*   **Forwarding:** When a user application (like `nc` or `ssh`) connects to this port:
+    1.  The client accepts the connection.
+    2.  It opens a new `smux` stream within the existing tunnel session.
+    3.  It pipes data bidirectionally between the local TCP connection and the `smux` stream.
+*   **Polling:** Since DNS is a request-response protocol, the server cannot push data to the client spontaneously. The client's `sendLoop` actively sends "polling" queries (empty queries) to the server to ask "Do you have data for me?" so the server can reply with data in the TXT record.
+
+
+## Original README
+
 Userspace DNS tunnel with support for DoH and DoT
 https://www.bamsoftware.com/software/dnstt/
 David Fifield <david@bamsoftware.com>
