@@ -56,7 +56,7 @@ Inside the DNS packets, `dnstt` runs a full networking stack to ensure the conne
 
 It's possible to run the system end-to-end locally without registering a domain name. This is helpful for development.
 
-### Generate the keys:
+### 1. Generate the keys:
 
 ```console
 $ go run www.bamsoftware.com/git/dnstt.git/dnstt-server@latest -gen-key
@@ -64,7 +64,7 @@ privkey 04be6acdc398b0779fe538a4e042b7309b143006ae6d883a1ba808469f5b0f85
 pubkey  370d43f47ce12c1361c19a68c335729030a57065b4c8dc762422d1ec5b628d32
 ```
 
-### Run the server
+### 2. Run the remote port forwarder (server)
 
 You need to point to the backend you want to talk to. In this example, `example.com`.
 
@@ -72,13 +72,15 @@ You need to point to the backend you want to talk to. In this example, `example.
 go run www.bamsoftware.com/git/dnstt.git/dnstt-server@latest -udp :5300 -privkey 04be6acdc398b0779fe538a4e042b7309b143006ae6d883a1ba808469f5b0f85 t.example.com example.com:80
 ```
 
-### Run the client. You need to pass a local address that is forwarded to the server. In this example, `127.0.0.1:8001`.
+### 3. Run the local port forwarder (client)
+
+You need to pass the server address and a local address that is forwarded to the server. In this example, `127.0.0.1:8001`.
 
 ```sh
 go run www.bamsoftware.com/git/dnstt.git/dnstt-client@latest -pubkey 370d43f47ce12c1361c19a68c335729030a57065b4c8dc762422d1ec5b628d32 -udp 127.0.0.1:5300 t.example.com 127.0.0.1:8001
 ```
 
-### Test
+### 4. Test
 
 Connect to the local address to observe the end-to-end connection.
 
