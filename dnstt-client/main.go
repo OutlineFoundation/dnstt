@@ -119,41 +119,41 @@ func sampleUTLSDistribution(spec string) (*utls.ClientHelloID, error) {
 	return ids[sampleWeighted(weights)], nil
 }
 
-func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
-	stream, err := sess.OpenStream()
+func handle(local *net.TCPConn, smuxSession *smux.Session, kcpConv uint32) error {
+	smuxStream, err := smuxSession.OpenStream()
 	if err != nil {
-		return fmt.Errorf("session %08x opening stream: %v", conv, err)
+		return fmt.Errorf("session %08x opening stream: %v", kcpConv, err)
 	}
 	defer func() {
-		log.Printf("end stream %08x:%d", conv, stream.ID())
-		stream.Close()
+		log.Printf("end stream %08x:%d", kcpConv, smuxStream.ID())
+		smuxStream.Close()
 	}()
-	log.Printf("begin stream %08x:%d", conv, stream.ID())
+	log.Printf("begin stream %08x:%d", kcpConv, smuxStream.ID())
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(stream, local)
+		_, err := io.Copy(smuxStream, local)
 		if err == io.EOF {
 			// smux Stream.Write may return io.EOF.
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
+			log.Printf("stream %08x:%d copy stream←local: %v", kcpConv, smuxStream.ID(), err)
 		}
 		local.CloseRead()
-		stream.Close()
+		smuxStream.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(local, stream)
+		_, err := io.Copy(local, smuxStream)
 		if err == io.EOF {
 			// smux Stream.WriteTo may return io.EOF.
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
+			log.Printf("stream %08x:%d copy local←stream: %v", kcpConv, smuxStream.ID(), err)
 		}
 		local.CloseWrite()
 	}()
@@ -177,33 +177,33 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	}
 	log.Printf("effective MTU %d", mtu)
 
-	// Open a KCP conn on the PacketConn.
-	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
+	// Open a KCP kcpSession on the PacketConn.
+	kcpSession, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
 	if err != nil {
 		return fmt.Errorf("opening KCP conn: %v", err)
 	}
 	defer func() {
-		log.Printf("end session %08x", conn.GetConv())
-		conn.Close()
+		log.Printf("end session %08x", kcpSession.GetConv())
+		kcpSession.Close()
 	}()
-	log.Printf("begin session %08x", conn.GetConv())
+	log.Printf("begin session %08x", kcpSession.GetConv())
 	// Permit coalescing the payloads of consecutive sends.
-	conn.SetStreamMode(true)
+	kcpSession.SetStreamMode(true)
 	// Disable the dynamic congestion window (limit only by the maximum of
 	// local and remote static windows).
-	conn.SetNoDelay(
+	kcpSession.SetNoDelay(
 		0, // default nodelay
 		0, // default interval
 		0, // default resend
 		1, // nc=1 => congestion window off
 	)
-	conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
-	if rc := conn.SetMtu(mtu); !rc {
+	kcpSession.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
+	if rc := kcpSession.SetMtu(mtu); !rc {
 		panic(rc)
 	}
 
 	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewClient(conn, pubkey)
+	noiseIO, err := noise.NewClient(kcpSession, pubkey)
 	if err != nil {
 		return err
 	}
@@ -213,11 +213,11 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
-	sess, err := smux.Client(rw, smuxConfig)
+	smuxSession, err := smux.Client(noiseIO, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
 	}
-	defer sess.Close()
+	defer smuxSession.Close()
 
 	for {
 		local, err := ln.Accept()
@@ -229,7 +229,7 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 		}
 		go func() {
 			defer local.Close()
-			err := handle(local.(*net.TCPConn), sess, conn.GetConv())
+			err := handle(local.(*net.TCPConn), smuxSession, kcpSession.GetConv())
 			if err != nil {
 				log.Printf("handle: %v", err)
 			}
