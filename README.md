@@ -51,3 +51,38 @@ Inside the DNS packets, `dnstt` runs a full networking stack to ensure the conne
     2.  It opens a new `smux` stream within the existing tunnel session.
     3.  It pipes data bidirectionally between the local TCP connection and the `smux` stream.
 *   **Polling:** Since DNS is a request-response protocol, the server cannot push data to the client spontaneously. The client's `sendLoop` actively sends "polling" queries (empty queries) to the server to ask "Do you have data for me?" so the server can reply with data in the TXT record.
+
+## Running end-to-end locally
+
+It's possible to run the system end-to-end locally without registering a domain name. This is helpful for development.
+
+### Generate the keys:
+
+```console
+$ go run www.bamsoftware.com/git/dnstt.git/dnstt-server@latest -gen-key
+privkey 04be6acdc398b0779fe538a4e042b7309b143006ae6d883a1ba808469f5b0f85
+pubkey  370d43f47ce12c1361c19a68c335729030a57065b4c8dc762422d1ec5b628d32
+```
+
+### Run the server
+
+You need to point to the backend you want to talk to. In this example, `example.com`.
+
+```sh
+go run www.bamsoftware.com/git/dnstt.git/dnstt-server@latest -udp :5300 -privkey 04be6acdc398b0779fe538a4e042b7309b143006ae6d883a1ba808469f5b0f85 t.example.com example.com:80
+```
+
+### Run the client. You need to pass a local address that is forwarded to the server. In this example, `127.0.0.1:8001`.
+
+```sh
+go run www.bamsoftware.com/git/dnstt.git/dnstt-client@latest -pubkey 370d43f47ce12c1361c19a68c335729030a57065b4c8dc762422d1ec5b628d32 -udp 127.0.0.1:5300 t.example.com 127.0.0.1:8001
+```
+
+### Test
+
+Connect to the local address to observe the end-to-end connection.
+
+```console
+$ curl --connect-to ::127.0.0.1:8001 http://example.com
+<!doctype html><html lang="en"><head><title>Example Domain</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.<p><a href="https://iana.org/domains/example">Learn more</a></div></body></html>
+```
